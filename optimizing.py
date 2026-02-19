@@ -12,14 +12,45 @@ from sklearn.cluster import DBSCAN
 
 #TODO: try other algorithms
 
+def find_back_wall_midpoints(angle_ded, t_min):
+        """
+        find midpoints of all walls
+        find highest y value, thats back wall, tell x and y coordinates from that, and return angle
+
+        :param: angle_deg: angle in degrees of each wall
+        :param: t_min: 
+        """
+        pass
+
+def find_back_wall_angle():
+        """
+        find angle of all walls
+        find x and y coordinates from the midpoint of wall closes to 0
+        """
+        pass
+
+
+
 def v2_both_poles_and_walls(df:DataFrame):
+    #walls
     MIN_WALL_LENGTH=0.25 #number of points for a valid wall
     DISTANCE_DIFFERENCE= 0.2
-    NUMBER_TRIALS_POLES=500
     NUMBER_TRIALS_WALLS=500
-    POLE_RMSE=0.1
-    RESIDUAL_THRESHOLD_WALLS=0.025
-    JUMP_THRESHOLD=0.08
+    RESIDUAL_THRESHOLD_WALLS=0.025 #how much distance from a line can be counted inlier
+    MIN_WALL_POINTS=15 #min number of points for a wall to be called a wall
+    
+    #segmentation
+    JUMP_THRESHOLD=0.08 #jump distance between points in the segment
+    POINTS_PER_SEGMENT=3 #min number of points for segment
+
+    #poles
+    POLE_RMSE=0.1 #How much error allowed for a pole
+    NUMBER_TRIALS_POLES=500
+    MIN_POLE_POINTS=5 #min number of points counted as a pole
+    RESIDUAL_THRESHOLD_POLES=0.02 #how much distance from a line can be counted inlier
+    MIN_RADIUS=0.01 #min radius of a pole to be counted
+    MAX_RADIUS=0.15 # max radius
+
 
     def segment_jumps(raw_distances,jump_threshold=JUMP_THRESHOLD):
         """Basically it breaks different parts up by the jumps it sees in the distances"""
@@ -36,7 +67,7 @@ def v2_both_poles_and_walls(df:DataFrame):
             prev=j+1 #to go to next index
         
         #basically if a segment is more than at least like 3 points then count it
-        if len(raw_distances)-prev>=3:
+        if len(raw_distances)-prev>=POINTS_PER_SEGMENT:
             segments.append((prev,len(raw_distances)))
         
         return segments
@@ -48,7 +79,7 @@ def v2_both_poles_and_walls(df:DataFrame):
         :param points: Description
         """
         #if not enough points, no ned
-        if len(points)<5: return None
+        if len(points)<MIN_POLE_POINTS: return None
         
         #try fit a line
         # try:
@@ -65,12 +96,12 @@ def v2_both_poles_and_walls(df:DataFrame):
         #try fit a circle
         try:
             circle_model,circle_inliers = ransac(
-                points,CircleModel,min_samples=3,residual_threshold=0.02,max_trials=NUMBER_TRIALS_POLES
+                points,CircleModel,min_samples=3,residual_threshold=RESIDUAL_THRESHOLD_POLES,max_trials=NUMBER_TRIALS_POLES
             )
-            circle_residuals = circle_model.residuals(points) #type: ignore
+            circle_residuals = circle_model.residuals(points)
             circle_rmse = np.sqrt(np.mean(circle_residuals ** 2))
-            cx,cy = circle_model.center #type: ignore
-            r = circle_model.radius #type: ignore
+            cx,cy = circle_model.center
+            r = circle_model.radius
         except Exception:
             return None
 
@@ -80,7 +111,7 @@ def v2_both_poles_and_walls(df:DataFrame):
         max_extent=max(extent_x,extent_y)
 
         #conditions for pole (radius between 1 - 15 cm), circle must fit better than line
-        is_pole=(0.01<r<0.15 and max_extent<0.3 and circle_rmse<POLE_RMSE)
+        is_pole=(MIN_RADIUS<r<MAX_RADIUS and max_extent<0.3 and circle_rmse<POLE_RMSE)
 
         # if is_wall:
         #     walls=find_wall_smol(line_inliers=line_inliers,line_model=line_model,points=points)
@@ -88,7 +119,7 @@ def v2_both_poles_and_walls(df:DataFrame):
         
         if is_pole:
             inlier_points = points[circle_inliers]
-            if len(inlier_points)<5: return None
+            if len(inlier_points)<MIN_POLE_POINTS: return None
 
             angles = np.arctan2(inlier_points[:,1]-cy,
                                 inlier_points[:,0]-cx
@@ -117,6 +148,42 @@ def v2_both_poles_and_walls(df:DataFrame):
         
         else: return None
 
+    def find_wall_smol(line_model,points,line_inliers): #unused
+        min_inliers=15
+        walls=[]
+        
+        inlier_points=points[line_inliers]
+        if len(inlier_points) < min_inliers: # SUS
+            return
+
+        point_on_line= line_model.origin
+        direction=line_model.direction
+
+        t=np.dot(inlier_points - point_on_line, direction)
+        sorted_indices = np.argsort(t)
+        t_sorted=t[sorted_indices]
+        gaps=np.diff(t_sorted)
+        split_indices = np.where(gaps>DISTANCE_DIFFERENCE)[0] + 1
+        clusters = np.split(t_sorted,split_indices)
+        
+
+        angle_rad = np.arctan2(direction[1],direction[0]) #gives the gradient
+        angle_deg = np.degrees(angle_rad)
+        print("angle: ", angle_deg)
+        
+        for cluster in clusters:
+            if len(cluster)<2:
+                continue
+            t_min, t_max = cluster.min(),cluster.max()
+            wall_length=abs(t_max-t_min)
+
+            if wall_length> MIN_WALL_LENGTH:
+                wall_endpoints = point_on_line + np.outer([t_min,t_max],direction)
+                walls.append({"wall":wall_endpoints,
+                              "angle":angle_deg})
+        
+        return walls       
+
     def wall_ransac(data) -> List[dict]:
         """
         Docstring for wall_ransac
@@ -125,7 +192,7 @@ def v2_both_poles_and_walls(df:DataFrame):
         """
         remaining_data=data.copy() #data to be used
         walls=[] #location of identified walls
-        min_inliers= 15
+        min_inliers= MIN_WALL_POINTS
         while len(remaining_data)>min_inliers:
             try:
                 model_robust, inliers=ransac(
@@ -165,26 +232,8 @@ def v2_both_poles_and_walls(df:DataFrame):
                     wall_endpoints = point_on_line + np.outer([t_min,t_max],direction)
                     walls.append({"wall":wall_endpoints,"angle":angle_deg})
             
-            remaining_data = remaining_data[~inliers] #type: ignore
+            remaining_data = remaining_data[~inliers]
         return walls
-
-    def find_back_wall_midpoints(angle_ded, t_min):
-        """
-        find midpoints of all walls
-        find highest y value, thats back wall, tell x and y coordinates from that, and return angle
-
-        :param: angle_deg: angle in degrees of each wall
-        :param: t_min: 
-        """
-        pass
-
-    def find_back_wall_angle():
-        """
-        find angle of all walls
-        find x and y coordinates from the midpoint of wall closes to 0
-        """
-        pass
-
 
     #main pipeline
     df = df[df["y"]>-0.6] #just for placing rings cuz of noise
@@ -193,7 +242,7 @@ def v2_both_poles_and_walls(df:DataFrame):
 
     #read raw values for segmentation
     raw = df["raw"].astype(float)
-    data=np.column_stack([x,y])
+    data= np.column_stack([x,y])
 
     #segment everything
     segments = segment_jumps(raw.values)
@@ -252,14 +301,7 @@ def v2_both_poles_and_walls(df:DataFrame):
         print(f"ANGLE OF WALL: {i} is {wall['angle']:.2f}")
 
 
-
-    #display the walls
-    # wall_segments = wall_ransac(data)
-
-
-
     print(f"Poles found: {len(all_poles)}")
-
 
     #debug
     # print("Actual pole data")
@@ -268,8 +310,6 @@ def v2_both_poles_and_walls(df:DataFrame):
 
 
     #plot stuff
-    
-
     plt.axis("equal")
     plt.xlabel("X (meters)")
     plt.ylabel("Y (meters)")
