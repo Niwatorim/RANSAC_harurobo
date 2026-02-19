@@ -90,7 +90,6 @@ def find_poles_midpoint(all_poles:List[dict])-> dict:
 
     return final_point
 
-
 def v2_both_poles_and_walls(df:DataFrame):
     #walls
     MIN_WALL_LENGTH=0.25 #number of points for a valid wall
