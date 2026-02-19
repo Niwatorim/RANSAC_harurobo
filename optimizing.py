@@ -67,10 +67,10 @@ def v2_both_poles_and_walls(df:DataFrame):
             circle_model,circle_inliers = ransac(
                 points,CircleModel,min_samples=3,residual_threshold=0.02,max_trials=NUMBER_TRIALS_POLES
             )
-            circle_residuals = circle_model.residuals(points)
+            circle_residuals = circle_model.residuals(points) #type: ignore
             circle_rmse = np.sqrt(np.mean(circle_residuals ** 2))
-            cx,cy = circle_model.center
-            r = circle_model.radius
+            cx,cy = circle_model.center #type: ignore
+            r = circle_model.radius #type: ignore
         except Exception:
             return None
 
@@ -116,42 +116,6 @@ def v2_both_poles_and_walls(df:DataFrame):
                 }
         
         else: return None
-
-    def find_wall_smol(line_model,points,line_inliers):
-        min_inliers=15
-        walls=[]
-        
-        inlier_points=points[line_inliers]
-        if len(inlier_points) < min_inliers: # SUS
-            return
-
-        point_on_line= line_model.origin
-        direction=line_model.direction
-
-        t=np.dot(inlier_points - point_on_line, direction)
-        sorted_indices = np.argsort(t)
-        t_sorted=t[sorted_indices]
-        gaps=np.diff(t_sorted)
-        split_indices = np.where(gaps>DISTANCE_DIFFERENCE)[0] + 1
-        clusters = np.split(t_sorted,split_indices)
-        
-
-        angle_rad = np.arctan2(direction[1],direction[0]) #gives the gradient
-        angle_deg = np.degrees(angle_rad)
-        print("angle: ", angle_deg)
-        
-        for cluster in clusters:
-            if len(cluster)<2:
-                continue
-            t_min, t_max = cluster.min(),cluster.max()
-            wall_length=abs(t_max-t_min)
-
-            if wall_length> MIN_WALL_LENGTH:
-                wall_endpoints = point_on_line + np.outer([t_min,t_max],direction)
-                walls.append({"wall":wall_endpoints,
-                              "angle":angle_deg})
-        
-        return walls       
 
     def wall_ransac(data) -> List[dict]:
         """
@@ -201,8 +165,25 @@ def v2_both_poles_and_walls(df:DataFrame):
                     wall_endpoints = point_on_line + np.outer([t_min,t_max],direction)
                     walls.append({"wall":wall_endpoints,"angle":angle_deg})
             
-            remaining_data = remaining_data[~inliers]
+            remaining_data = remaining_data[~inliers] #type: ignore
         return walls
+
+    def find_back_wall_midpoints(angle_ded, t_min):
+        """
+        find midpoints of all walls
+        find highest y value, thats back wall, tell x and y coordinates from that, and return angle
+
+        :param: angle_deg: angle in degrees of each wall
+        :param: t_min: 
+        """
+        pass
+
+    def find_back_wall_angle():
+        """
+        find angle of all walls
+        find x and y coordinates from the midpoint of wall closes to 0
+        """
+        pass
 
 
     #main pipeline

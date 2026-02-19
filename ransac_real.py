@@ -96,7 +96,7 @@ def v1_both_poles_and_walls(df):
             line_model,line_inliers=ransac(
                 points,LineModelND,min_samples=2,residual_threshold=0.02,max_trials=NUMBER_TRIALS_WALLS
             )
-            line_residuals = line_model.residuals(points)
+            line_residuals = line_model.residuals(points) #type: ignore
 
             #find the error
             line_rmse=np.sqrt(np.mean(line_residuals ** 2))
@@ -108,10 +108,10 @@ def v1_both_poles_and_walls(df):
             circle_model,circle_inliers = ransac(
                 points,CircleModel,min_samples=3,residual_threshold=0.02,max_trials=NUMBER_TRIALS_POLES
             )
-            circle_residuals = circle_model.residuals(points)
+            circle_residuals = circle_model.residuals(points) #type: ignore
             circle_rmse = np.sqrt(np.mean(circle_residuals ** 2))
-            cx,cy = circle_model.center
-            r = circle_model.radius
+            cx,cy = circle_model.center #type: ignore
+            r = circle_model.radius #type: ignore
         except Exception:
             return None
 
@@ -170,8 +170,8 @@ def v1_both_poles_and_walls(df):
             if len(inlier_points) < min_inliers: # SUS
                 break
 
-            point_on_line= model_robust.origin
-            direction=model_robust.direction
+            point_on_line= model_robust.origin #type: ignore
+            direction=model_robust.direction #type: ignore
 
             t=np.dot(inlier_points - point_on_line, direction)
             sorted_indices = np.argsort(t)
@@ -195,7 +195,7 @@ def v1_both_poles_and_walls(df):
                     wall_endpoints = point_on_line + np.outer([t_min,t_max],direction)
                     walls.append({"wall":wall_endpoints,"angle":angle_deg})
             
-            remaining_data = remaining_data[~inliers]
+            remaining_data = remaining_data[~inliers] #type: ignore
         return walls
 
 
@@ -256,10 +256,10 @@ def v1_both_poles_and_walls(df):
 
     for i, wall in enumerate(wall_segments):
         label = "Wall" if i == 0 else None
-        plt.plot(wall["wall"][:, 0], wall["wall"][:, 1], c="blue", linewidth=2, label=label)
+        plt.plot(wall["wall"][:, 0], wall["wall"][:, 1], c="blue", linewidth=2, label=label) #type: ignore
         
         #find the angle
-        print(f"ANGLE OF WALL: {i} is {wall["angle"]}")
+        print(f"ANGLE OF WALL: {i} is {wall["angle"]}") #type: ignore
 
 
     for i, pole in enumerate(all_poles):
