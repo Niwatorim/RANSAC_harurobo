@@ -281,7 +281,7 @@ if __name__ == "__main__":
     # df=pd.read_csv(f"real_points/copy/lidar_data_{to_read}")
     # both_poles_and_walls(df)
 
-    to_read=take_rings
+    to_read=honmaru
     df=pd.read_csv(f"real_points/copy/lidar_data_{to_read}")
     v2_both_poles_and_walls(df)
     

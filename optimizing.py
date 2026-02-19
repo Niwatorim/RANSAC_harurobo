@@ -9,26 +9,86 @@ import math
 from matplotlib import pyplot as plt
 from typing import List
 from sklearn.cluster import DBSCAN
+from typing import Dict, Optional, Union
 
 #TODO: try other algorithms
 
-def find_back_wall_midpoints(angle_ded, t_min):
+def find_back_wall_midpoints(wall_data:list[dict]) -> dict:
         """
         find midpoints of all walls
-        find highest y value, thats back wall, tell x and y coordinates from that, and return angle
+        find highest y value, thats back wall, 
+        tell x and y coordinates from that, and return angle as well
 
-        :param: angle_deg: angle in degrees of each wall
-        :param: t_min: 
+        :param: wall_data: is a list of all walls with the endpoints and angles per wall
         """
-        pass
+        max_y=0
+        final_wall={}
+        for i in wall_data:
+            angle_deg=i["angle"]
+            wall_endpoints=i["wall"]
+            mid_point_y=(wall_endpoints[0][1]+wall_endpoints[1][1])/2
+            mid_point_x=(wall_endpoints[0][0]+wall_endpoints[1][0])/2
+            if mid_point_y>max_y:
+                final_wall["angle"]=angle_deg
+                final_wall["mid_x"]=mid_point_x
+                final_wall["mid_y"]=mid_point_y
+                max_y= mid_point_y
+        return final_wall
 
-def find_back_wall_angle():
+def find_back_wall_angle(wall_data:list[dict]) -> dict: #unused
         """
         find angle of all walls
         find x and y coordinates from the midpoint of wall closes to 0
-        """
-        pass
 
+        :param: wall_data: is a list of all walls with the endpoints and angles per wall
+        """
+        final_wall={}
+        degrees=361 #no angle can be this big
+        for i in wall_data:
+            angle_deg=i["angle"]
+            wall_endpoints=i["wall"]
+            mid_point_y=(wall_endpoints[0][1]+wall_endpoints[1][1])/2
+            mid_point_x=(wall_endpoints[0][0]+wall_endpoints[1][0])/2
+            if abs(angle_deg)<degrees:
+                final_wall["angle"]=angle_deg
+                final_wall["mid_x"]=mid_point_x
+                final_wall["mid_y"]=mid_point_y
+                degrees=angle_deg
+        
+        return final_wall
+
+def find_poles_midpoint(all_poles:List[dict])-> dict:
+    final_point: Dict[str, Optional[float]]={
+        "mid_x":None,
+        "mid_y":None,
+        "angle":None
+    }
+
+    midpoint_y=0
+    midpoint_x=0
+    if len(all_poles)%2==1: #dealing with one pole
+        for pole in all_poles:
+            midpoint_y+=pole["cy"]
+            midpoint_x+=pole["cx"]
+        final_point["mid_y"]=midpoint_y/len(all_poles)
+        final_point["mid_x"]=midpoint_x/len(all_poles)
+    
+    else: #should be dealing with 2 poles
+        for pole in all_poles:
+            midpoint_y+=pole["cy"]
+            midpoint_x+=pole["cx"]
+        final_point["mid_y"]=midpoint_y/len(all_poles)
+        final_point["mid_x"]=midpoint_x/len(all_poles)
+
+        first_pole=pole[0]
+        second_pole=pole[1]
+        diff_y=first_pole["cy"]-second_pole["cy"]
+        diff_x=first_pole["cx"]-second_pole["cx"]
+        angle_rad=np.arctan2(diff_y,diff_x)
+        final_point["angle"]=np.rad2deg(angle_rad)
+
+
+    return final_point
 
 
 def v2_both_poles_and_walls(df:DataFrame):
@@ -98,10 +158,10 @@ def v2_both_poles_and_walls(df:DataFrame):
             circle_model,circle_inliers = ransac(
                 points,CircleModel,min_samples=3,residual_threshold=RESIDUAL_THRESHOLD_POLES,max_trials=NUMBER_TRIALS_POLES
             )
-            circle_residuals = circle_model.residuals(points)
+            circle_residuals = circle_model.residuals(points) #type: ignore
             circle_rmse = np.sqrt(np.mean(circle_residuals ** 2))
-            cx,cy = circle_model.center
-            r = circle_model.radius
+            cx,cy = circle_model.center #type: ignore
+            r = circle_model.radius #type: ignore
         except Exception:
             return None
 
@@ -147,42 +207,6 @@ def v2_both_poles_and_walls(df:DataFrame):
                 }
         
         else: return None
-
-    def find_wall_smol(line_model,points,line_inliers): #unused
-        min_inliers=15
-        walls=[]
-        
-        inlier_points=points[line_inliers]
-        if len(inlier_points) < min_inliers: # SUS
-            return
-
-        point_on_line= line_model.origin
-        direction=line_model.direction
-
-        t=np.dot(inlier_points - point_on_line, direction)
-        sorted_indices = np.argsort(t)
-        t_sorted=t[sorted_indices]
-        gaps=np.diff(t_sorted)
-        split_indices = np.where(gaps>DISTANCE_DIFFERENCE)[0] + 1
-        clusters = np.split(t_sorted,split_indices)
-        
-
-        angle_rad = np.arctan2(direction[1],direction[0]) #gives the gradient
-        angle_deg = np.degrees(angle_rad)
-        print("angle: ", angle_deg)
-        
-        for cluster in clusters:
-            if len(cluster)<2:
-                continue
-            t_min, t_max = cluster.min(),cluster.max()
-            wall_length=abs(t_max-t_min)
-
-            if wall_length> MIN_WALL_LENGTH:
-                wall_endpoints = point_on_line + np.outer([t_min,t_max],direction)
-                walls.append({"wall":wall_endpoints,
-                              "angle":angle_deg})
-        
-        return walls       
 
     def wall_ransac(data) -> List[dict]:
         """
@@ -232,7 +256,7 @@ def v2_both_poles_and_walls(df:DataFrame):
                     wall_endpoints = point_on_line + np.outer([t_min,t_max],direction)
                     walls.append({"wall":wall_endpoints,"angle":angle_deg})
             
-            remaining_data = remaining_data[~inliers]
+            remaining_data = remaining_data[~inliers] #type: ignore
         return walls
 
     #main pipeline
@@ -294,7 +318,9 @@ def v2_both_poles_and_walls(df:DataFrame):
 
     remaining_data = data[~pole_inlier_mask]
     wall_segments.extend(wall_ransac(remaining_data))
-    # Safe Plotting for Walls
+    
+    
+    #plotting for Walls
     for i, wall in enumerate(wall_segments):
         label = "Wall" if i == 0 else None
         plt.plot(wall["wall"][:, 0], wall["wall"][:, 1], c="blue", linewidth=2, label=label)
@@ -303,11 +329,29 @@ def v2_both_poles_and_walls(df:DataFrame):
 
     print(f"Poles found: {len(all_poles)}")
 
+
+    #wall midpoints
+    print("---- middle wall ------")
+    back_wall=find_back_wall_midpoints(wall_segments)
+    print(f"mid_point x: {back_wall["mid_x"]}\t mid_point y: {back_wall["mid_y"]}")
+    print(f"angle of wall is {back_wall["angle"]}")
+    plt.scatter(back_wall["mid_x"],back_wall["mid_y"],c="red",marker="x",s=50,zorder=5 )
+
+
+
+    #pole midpoints
+    print("----- pole center ----")
+    pole_center=find_poles_midpoint(all_poles)
+    print(f"mid_point x: {pole_center["mid_x"]}\t mid_point y: {pole_center["mid_y"]}")
+    if pole_center["angle"] is not None:
+        print(f"angle of pole is {pole_center["angle"]}")
+    plt.scatter(pole_center["mid_x"],pole_center["mid_y"],c="green",marker="x",s=50,zorder=5 )
+
+
     #debug
     # print("Actual pole data")
     # pole_data:DataFrame = df[(df["y"]>0.08)&(df["y"]<0.2)]
     # print(pole_data.head(100))
-
 
     #plot stuff
     plt.axis("equal")
