@@ -864,6 +864,10 @@ def v3_both_poles_and_walls(df:DataFrame):
     MAX_RADIUS = 0.15
     MIN_ARC_DEG = 10 #minimum arc required to be identified as circle
 
+    #back wall filtering
+    BACKWALL_WIDTH=0.1 #width of the back-wall band in meters (half above, half below)
+    VERTICAL_WALL_ANGLE=75 #degrees — walls steeper than this are "vertical"
+
     def segment_jumps(raw_distances,jump_threshold=JUMP_THRESHOLD):
         """Basically it breaks different parts up by the jumps it sees in the distances"""
         
@@ -1194,18 +1198,37 @@ def v3_both_poles_and_walls(df:DataFrame):
                     c="orange", s=10, alpha=0.7, label="Non-wall points")
 
 
-    for i, pole in enumerate(all_poles):
-        if 'cx' in pole:
-            print(f"  Pole {i+1}: center=({pole['cx']:.3f}, {pole['cy']:.3f}), radius={pole['radius']:.3f}m, method={pole.get('method','?')}")
-
-            label = "Pole" if i == 0 else None
-            plt.scatter(pole["cx"], pole["cy"], c="black", marker='x', s=200, zorder=5, label=label)
+    #vertical walls:
+    vertical_walls=[]
 
     #plotting for Walls
     for i, wall in enumerate(wall_segments):
         label = "Wall" if i == 0 else None
         plt.plot(wall["wall"][:, 0], wall["wall"][:, 1], c="blue", linewidth=2, label=label)
         print(f"ANGLE OF WALL: {i} is {wall['angle']:.2f}")
+        if abs(wall["angle"])>VERTICAL_WALL_ANGLE:
+            vertical_walls.append(wall)
+
+    #--- connect vertical walls & filter spurious poles ---
+    if vertical_walls:
+        all_vw_points = np.vstack([w["wall"] for w in vertical_walls])
+        x_min, x_max = all_vw_points[:, 0].min(), all_vw_points[:, 0].max()
+        y_avg = all_vw_points[:, 1].mean()
+        band_lo = y_avg - BACKWALL_WIDTH / 2
+        band_hi = y_avg + BACKWALL_WIDTH / 2
+        removed = len(all_poles)
+        all_poles = [p for p in all_poles
+                     if not (x_min <= p["cx"] <= x_max and band_lo <= p["cy"] <= band_hi)]
+        removed -= len(all_poles)
+        if removed > 0:
+            print(f"Filtered {removed} pole(s) inside back-wall band (y={band_lo:.2f} to {band_hi:.2f})")
+
+    for i, pole in enumerate(all_poles):
+        if 'cx' in pole:
+            print(f"  Pole {i+1}: center=({pole['cx']:.3f}, {pole['cy']:.3f}), radius={pole['radius']:.3f}m, method={pole.get('method','?')}")
+
+            label = "Pole" if i == 0 else None
+            plt.scatter(pole["cx"], pole["cy"], c="black", marker='x', s=200, zorder=5, label=label)
 
     print(f"Poles found: {len(all_poles)}")
 
@@ -1262,6 +1285,10 @@ def v3_both_poles_and_walls_no_plot(df:DataFrame) -> dict:
     MIN_RADIUS = 0.005
     MAX_RADIUS = 0.15
     MIN_ARC_DEG = 10
+
+    #back wall filtering
+    BACKWALL_WIDTH=0.1 #width of the back-wall band in meters (half above, half below)
+    VERTICAL_WALL_ANGLE=75 #degrees — walls steeper than this are "vertical"
 
     def wall_ransac_inner(data) -> List[dict]:
         remaining_data=data.copy()
@@ -1372,6 +1399,7 @@ def v3_both_poles_and_walls_no_plot(df:DataFrame) -> dict:
     remaining_data = data[~wall_inlier_mask]
     all_poles = []
     if len(remaining_data) >= MIN_POINTS:
+        #use DB scan if over min number of points
         clustering = DBSCAN(eps=0.03, min_samples=3).fit(remaining_data)
         labels = clustering.labels_
         for label in set(labels) - {-1}:
@@ -1381,6 +1409,17 @@ def v3_both_poles_and_walls_no_plot(df:DataFrame) -> dict:
             res = classify_pole(cluster_points)
             if res and res["type"] == "pole":
                 all_poles.append(res)
+
+    #--- connect vertical walls & filter spurious poles ---
+    vertical_walls = [w for w in wall_segments if abs(w["angle"]) > VERTICAL_WALL_ANGLE]
+    if vertical_walls:
+        all_vw_points = np.vstack([w["wall"] for w in vertical_walls])
+        x_min, x_max = all_vw_points[:, 0].min(), all_vw_points[:, 0].max()
+        y_avg = all_vw_points[:, 1].mean()
+        band_lo = y_avg - BACKWALL_WIDTH / 2
+        band_hi = y_avg + BACKWALL_WIDTH / 2
+        all_poles = [p for p in all_poles
+                     if not (x_min <= p["cx"] <= x_max and band_lo <= p["cy"] <= band_hi)]
 
     processing_time = (time.time() - start_time)
     return {
@@ -1559,7 +1598,6 @@ class ScanMatchingTracker:
             "walls": result["walls"],
             "poles": result["poles"]
         }
-
 
     def fast_detect(self,df: DataFrame) -> dict:
         """
