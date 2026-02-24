@@ -839,7 +839,7 @@ def v2_both_poles_and_walls_no_plot(df:DataFrame) -> dict:
 
 def v3_both_poles_and_walls(df:DataFrame):
     #walls
-    MIN_WALL_LENGTH=0.4 #number of points for a valid wall
+    MIN_WALL_LENGTH=0.25 #number of points for a valid wall
     DISTANCE_DIFFERENCE= 0.2
     NUMBER_TRIALS_WALLS=100
     RESIDUAL_THRESHOLD_WALLS=0.025 #how much distance from a line can be counted inlier
@@ -863,10 +863,6 @@ def v3_both_poles_and_walls(df:DataFrame):
     MIN_RADIUS = 0.005
     MAX_RADIUS = 0.15
     MIN_ARC_DEG = 10
-
-    #back wall filtering
-    BACKWALL_WIDTH=0.1 #width of the back-wall band in meters (half above, half below)
-    VERTICAL_WALL_ANGLE=75 #degrees — walls steeper than this are "vertical"
 
     def segment_jumps(raw_distances,jump_threshold=JUMP_THRESHOLD):
         """Basically it breaks different parts up by the jumps it sees in the distances"""
@@ -1189,9 +1185,6 @@ def v3_both_poles_and_walls(df:DataFrame):
             if res and res["type"] == "pole":
                 all_poles.append(res)
 
-
-
-
     # ============================================================
     # Plotting
     # ============================================================
@@ -1203,32 +1196,6 @@ def v3_both_poles_and_walls(df:DataFrame):
         plt.scatter(remaining_data[:, 0], remaining_data[:, 1],
                     c="orange", s=10, alpha=0.7, label="Non-wall points")
 
-    
-    #vertical walls:
-    vertical_walls=[]
-
-    #plotting for Walls
-    for i, wall in enumerate(wall_segments):
-        label = "Wall" if i == 0 else None
-        plt.plot(wall["wall"][:, 0], wall["wall"][:, 1], c="blue", linewidth=2, label=label)
-        print(f"ANGLE OF WALL: {i} is {wall['angle']:.2f}")
-        if abs(wall["angle"])>VERTICAL_WALL_ANGLE:
-            vertical_walls.append(wall)
-
-    #--- connect vertical walls & filter spurious poles ---
-    if vertical_walls:
-        all_vw_points = np.vstack([w["wall"] for w in vertical_walls])
-        x_min, x_max = all_vw_points[:, 0].min(), all_vw_points[:, 0].max()
-        y_avg = all_vw_points[:, 1].mean()
-        band_lo = y_avg - BACKWALL_WIDTH / 2
-        band_hi = y_avg + BACKWALL_WIDTH / 2
-        removed = len(all_poles)
-        all_poles = [p for p in all_poles
-                     if not (x_min <= p["cx"] <= x_max and band_lo <= p["cy"] <= band_hi)]
-        removed -= len(all_poles)
-        if removed > 0:
-            print(f"Filtered {removed} pole(s) inside back-wall band (y={band_lo:.2f} to {band_hi:.2f})")
-
     for i, pole in enumerate(all_poles):
         if 'cx' in pole:
             print(f"  Pole {i+1}: center=({pole['cx']:.3f}, {pole['cy']:.3f}), radius={pole['radius']:.3f}m, method={pole.get('method','?')}")
@@ -1236,6 +1203,11 @@ def v3_both_poles_and_walls(df:DataFrame):
             label = "Pole" if i == 0 else None
             plt.scatter(pole["cx"], pole["cy"], c="black", marker='x', s=200, zorder=5, label=label)
 
+    #plotting for Walls
+    for i, wall in enumerate(wall_segments):
+        label = "Wall" if i == 0 else None
+        plt.plot(wall["wall"][:, 0], wall["wall"][:, 1], c="blue", linewidth=2, label=label)
+        print(f"ANGLE OF WALL: {i} is {wall['angle']:.2f}")
 
     print(f"Poles found: {len(all_poles)}")
 
@@ -1265,15 +1237,160 @@ def v3_both_poles_and_walls(df:DataFrame):
     plt.title("LiDAR Detection: Poles (Red) & Walls (Blue)")
     plt.legend()
 
+    return {
+        'walls': wall_segments,
+        'poles': all_poles,
+        'processing_time': processing_time,
+        'frequency': 1/processing_time
+    }
 
+def v3_both_poles_and_walls_no_plot(df:DataFrame) -> dict:
+    """
+    Same as v3_both_poles_and_walls but without plotting.
+    Used by ScanMatchingTracker for full detection.
+    
+    Pipeline: walls first via RANSAC -> remove wall points -> DBSCAN cluster remaining -> classify as poles
+    """
+    #walls
+    MIN_WALL_LENGTH=0.25
+    DISTANCE_DIFFERENCE= 0.2
+    NUMBER_TRIALS_WALLS=100
+    RESIDUAL_THRESHOLD_WALLS=0.025
+    MIN_WALL_POINTS=15
+    MAX_NUMBER_WALLS=6
 
+    #poles
+    MIN_POINTS = 6
+    MIN_RADIUS = 0.005
+    MAX_RADIUS = 0.15
+    MIN_ARC_DEG = 10
 
+    def wall_ransac_inner(data) -> List[dict]:
+        remaining_data=data.copy()
+        walls=[]
+        min_inliers= MIN_WALL_POINTS
+        while len(remaining_data)>min_inliers and len(walls)<=MAX_NUMBER_WALLS:
+            try:
+                model_robust, inliers=ransac(
+                    remaining_data,LineModelND,min_samples=5,
+                    residual_threshold=RESIDUAL_THRESHOLD_WALLS,max_trials=NUMBER_TRIALS_WALLS
+                )
+                if model_robust is None:
+                    break
+            except Exception:
+                break
 
+            inlier_points=remaining_data[inliers]
+            if len(inlier_points) < min_inliers:
+                break
 
+            point_on_line= model_robust.origin
+            direction=model_robust.direction
+            t=np.dot(inlier_points - point_on_line, direction)
+            sorted_indices = np.argsort(t)
+            t_sorted=t[sorted_indices]
+            gaps=np.diff(t_sorted)
+            split_indices = np.where(gaps>DISTANCE_DIFFERENCE)[0] + 1
+            clusters = np.split(t_sorted,split_indices)
 
+            angle_rad = np.arctan2(direction[1],direction[0])
+            angle_deg = np.degrees(angle_rad)
 
+            for cluster in clusters:
+                if len(cluster)<2:
+                    continue
+                t_min, t_max = cluster.min(),cluster.max()
+                wall_length=abs(t_max-t_min)
+                if wall_length> MIN_WALL_LENGTH:
+                    wall_endpoints = point_on_line + np.outer([t_min,t_max],direction)
+                    walls.append({"wall":wall_endpoints,"angle":angle_deg})
 
+            remaining_data = remaining_data[~inliers]
+        return walls
 
+    def classify_pole(points):
+        """Try circle fit on a cluster to see if it's a pole"""
+        if len(points) < MIN_POINTS:
+            return None
+        try:
+            circle_model, circle_inliers = ransac(
+                points, CircleModel,
+                min_samples=3, residual_threshold=0.04, max_trials=100
+            )
+            cx, cy = circle_model.params[0], circle_model.params[1]
+            r = circle_model.params[2]
+
+            if not (MIN_RADIUS < r < MAX_RADIUS):
+                return None
+
+            inlier_points = points[circle_inliers]
+            if len(inlier_points) < MIN_POINTS:
+                return None
+
+            angles = np.arctan2(inlier_points[:, 1] - cy, inlier_points[:, 0] - cx)
+            arc_span_deg = np.degrees(angles.max() - angles.min())
+            if arc_span_deg < MIN_ARC_DEG:
+                return None
+
+            residuals = circle_model.residuals(points)
+            rmse = np.sqrt(np.mean(residuals ** 2))
+
+            return {
+                "type": "pole", "cx": cx, "cy": cy, "radius": r,
+                "circle_rmse": rmse, "arc_span_deg": arc_span_deg, "method": "circle"
+            }
+        except:
+            return None
+
+    start_time = time.time()
+
+    df = df[df["y"]>-0.6]
+    y = df["x"]
+    x = df["y"]
+    data = np.column_stack([x, y])
+
+    # STEP 1: Detect walls
+    wall_segments = wall_ransac_inner(data)
+
+    # STEP 2: Remove wall points
+    wall_inlier_mask = np.zeros(len(data), dtype=bool)
+    for wall in wall_segments:
+        wall_endpoints = wall["wall"]
+        direction = wall_endpoints[1] - wall_endpoints[0]
+        wall_len = np.linalg.norm(direction)
+        if wall_len < 1e-9:
+            continue
+        direction_norm = direction / wall_len
+        vecs = data - wall_endpoints[0]
+        t = np.dot(vecs, direction_norm)
+        perp = vecs - np.outer(t, direction_norm)
+        perp_dist = np.linalg.norm(perp, axis=1)
+        margin = 0.05
+        is_close = perp_dist < (RESIDUAL_THRESHOLD_WALLS * 2)
+        is_between = (t > -margin) & (t < wall_len + margin)
+        wall_inlier_mask = wall_inlier_mask | (is_close & is_between)
+
+    # STEP 3: Cluster remaining and find poles
+    remaining_data = data[~wall_inlier_mask]
+    all_poles = []
+    if len(remaining_data) >= MIN_POINTS:
+        clustering = DBSCAN(eps=0.03, min_samples=3).fit(remaining_data)
+        labels = clustering.labels_
+        for label in set(labels) - {-1}:
+            cluster_points = remaining_data[labels == label]
+            if len(cluster_points) < MIN_POINTS:
+                continue
+            res = classify_pole(cluster_points)
+            if res and res["type"] == "pole":
+                all_poles.append(res)
+
+    processing_time = (time.time() - start_time)
+    return {
+        'walls': wall_segments,
+        'poles': all_poles,
+        'processing_time': processing_time,
+        'frequency': 1/processing_time
+    }
 
 
 #----------------------
@@ -1348,8 +1465,8 @@ class ScanMatchingTracker:
         self.frame_count = 0
         self.full_frame_count = 10 #number of frames till we do a full rescan
 
-        #this allows us to use prev logic for a total rescan
-        self.full_detector = v2_both_poles_and_walls_no_plot
+        #this allows us to use prev logic for a total rescan (v3 = walls-first approach)
+        self.full_detector = v3_both_poles_and_walls_no_plot
 
     def proces_frame(self, df: DataFrame) -> Dict:
         """
@@ -1478,38 +1595,78 @@ class ScanMatchingTracker:
 
     def detect_features_fast(self, df: DataFrame) -> tuple[List[Wall], List[Pole]]:
         """
-        Basically using no ransac, so can speed up detection to just calc values and find locations of shapes
+        Fast detection using walls-first approach (no RANSAC, uses SVD + DBSCAN).
+        
+        Pipeline:
+        1. Segment by jumps (to separate far-apart objects)
+        2. Fit walls to large segments using SVD (fast, no RANSAC)
+        3. Remove wall inlier points from the data
+        4. Cluster remaining points with DBSCAN
+        5. Fit circles to each cluster to find poles
         """
 
-        x= df["y"].values
-        y=df["x"].values
-        points = np.column_stack([x, y]) #type: ignore
-        raw=df["raw"].astype(float).values
+        x = df["y"].values
+        y = df["x"].values
+        points = np.column_stack([x, y])  # type: ignore
+        raw = df["raw"].astype(float).values
 
-        #Just like before segmentation
-        segments=self.segment_by_jumps(raw)
+        # Segment by jumps first (to separate far-apart objects)
+        segments = self.segment_by_jumps(raw)
 
-        walls=[]
-        poles=[]
+        walls = []
 
-        #legit same logic as before
-        for start,end in segments:
+        # STEP 1: Find walls in each segment using SVD (fast)
+        for start, end in segments:
             segment_points = points[start:end]
             if len(segment_points) < POINTS_PER_SEGMENT:
                 continue
 
-            #classify by geometry stuff (see later)
+            # Check if this segment looks like a wall (long and thin)
             feature = self.classify_geometry(segment_points)
-            
             if feature == "wall":
-                #check if point fits to a wall
-                wall=self.fit_wall(segment_points)
+                wall = self.fit_wall(segment_points)
                 if wall:
                     walls.append(wall)
-            elif feature == "pole":
-                pole = self.fit_pole(segment_points)
+
+        # STEP 2: Remove points that belong to walls
+        wall_inlier_mask = np.zeros(len(points), dtype=bool)
+        for wall in walls:
+            wall_endpoints = wall.endpoints  # shape (2, 2)
+            direction = wall_endpoints[1] - wall_endpoints[0]
+            wall_len = np.linalg.norm(direction)
+            if wall_len < 1e-9:
+                continue
+            direction_norm = direction / wall_len
+
+            # How far along the wall + how far away from the wall
+            vecs = points - wall_endpoints[0]
+            t = np.dot(vecs, direction_norm)
+            perp = vecs - np.outer(t, direction_norm)
+            perp_dist = np.linalg.norm(perp, axis=1)
+
+            # Mark points close to the wall line and between endpoints
+            margin = 0.05
+            is_close = perp_dist < (RESIDUAL_THRESHOLD_WALLS * 2)
+            is_between = (t > -margin) & (t < wall_len + margin)
+            wall_inlier_mask = wall_inlier_mask | (is_close & is_between)
+
+        # STEP 3: Cluster remaining points with DBSCAN and fit poles
+        remaining_points = points[~wall_inlier_mask]
+        poles = []
+
+        if len(remaining_points) >= MIN_POLE_POINTS:
+            clustering = DBSCAN(eps=0.03, min_samples=3).fit(remaining_points)
+            labels = clustering.labels_
+
+            for label in set(labels) - {-1}:
+                cluster_points = remaining_points[labels == label]
+                if len(cluster_points) < MIN_POLE_POINTS:
+                    continue
+
+                # Try to fit a pole (circle) to this cluster
+                pole = self.fit_pole(cluster_points)
                 if pole:
-                    poles.append(segment_points)
+                    poles.append(pole)
 
         return walls, poles
 
@@ -1721,7 +1878,7 @@ class ScanMatchingTracker:
 
 
             # if walls moved, robot in opposite direction
-            dx_estimates.append(previous_center[0]-current_center[1])
+            dx_estimates.append(previous_center[0]-current_center[0])
             dy_estimates.append(previous_center[1]-current_center[1])
 
             angle_change= previous_wall.angle - current_wall.angle
@@ -1735,7 +1892,7 @@ class ScanMatchingTracker:
             dtheta_estimates.append(np.radians(angle_change))
 
         for current_pole, previous_pole in poles:
-            dx_estimates.append(previous_pole.cx - current_pole.cy)
+            dx_estimates.append(previous_pole.cx - current_pole.cx)
             dy_estimates.append(previous_pole.cy - current_pole.cy)
 
 
