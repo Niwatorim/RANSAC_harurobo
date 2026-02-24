@@ -845,6 +845,7 @@ def v3_both_poles_and_walls(df:DataFrame):
     RESIDUAL_THRESHOLD_WALLS=0.025 #how much distance from a line can be counted inlier
     MIN_WALL_POINTS=15 #min number of points for a wall to be called a wall
     MAX_NUMBER_WALLS=6 #maximum number of walls it will draw 
+    WALL_MARGIN=0.05
 
     #segmentation
     JUMP_THRESHOLD=0.08 #jump distance between points in the segment
@@ -855,14 +856,13 @@ def v3_both_poles_and_walls(df:DataFrame):
     NUMBER_TRIALS_POLES=500
     MIN_POLE_POINTS=4 #min number of points counted as a pole
     RESIDUAL_THRESHOLD_POLES=0.2 #how much distance from a line can be counted inlier
+
     MIN_RADIUS=0.005 #min radius of a pole to be counted
     MAX_RADIUS=0.25 # max radius
-    MIN_ARC_DEGREES=0.05
-
-    MIN_POINTS = 6
-    MIN_RADIUS = 0.005
+    MIN_POINTS = 6 #min points for circle
+    MIN_RADIUS = 0.005 
     MAX_RADIUS = 0.15
-    MIN_ARC_DEG = 10
+    MIN_ARC_DEG = 10 #minimum arc required to be identified as circle
 
     def segment_jumps(raw_distances,jump_threshold=JUMP_THRESHOLD):
         """Basically it breaks different parts up by the jumps it sees in the distances"""
@@ -1113,9 +1113,7 @@ def v3_both_poles_and_walls(df:DataFrame):
     raw = df["raw"].astype(float)
     data= np.column_stack([x,y])
 
-    # ============================================================
-    # STEP 1: Detect walls first (dominant linear features)
-    # ============================================================
+   #first check walls
     wall_segments = wall_ransac(data)
     print(f"Walls detected: {len(wall_segments)}")
 
@@ -1124,15 +1122,18 @@ def v3_both_poles_and_walls(df:DataFrame):
     # For each wall, we check every point: is it close to this wall line?
     # If yes, mark it True so we can remove it later and find poles in the leftovers
     # ============================================================
+
+    #basically check for points that belong to walls, and if they do, remove them so that we can figure out the rest to be either circles or noise
+    #so basically just create a mask that runs thru the points, true if belongs to wall, false if not
     wall_inlier_mask = np.zeros(len(data), dtype=bool)  # all False initially
 
     for wall in wall_segments:
-        wall_endpoints = wall["wall"]  # the 2 endpoints of the wall, shape (2, 2)
+        wall_endpoints = wall["wall"]  # the 2 endpoints of the wall
         
         # direction vector: points from endpoint[0] to endpoint[1]
         direction = wall_endpoints[1] - wall_endpoints[0]
         wall_len = np.linalg.norm(direction)  # length of the wall
-        if wall_len < 1e-9:  # skip walls that are basically zero length
+        if wall_len < 1e-9:  #skip walls that are basically zero length
             continue
         direction_norm = direction / wall_len  # unit vector along the wall
 
@@ -1153,7 +1154,7 @@ def v3_both_poles_and_walls(df:DataFrame):
         # A point belongs to this wall if:
         #   1) it's close enough to the wall line (perp_dist is small)
         #   2) it's between the two endpoints (with a small 5cm margin)
-        margin = 0.05  # 5cm margin past the endpoints
+        margin = WALL_MARGIN  # 5cm margin past the endpoints
         is_close_to_line = perp_dist < (RESIDUAL_THRESHOLD_WALLS * 2)
         is_between_endpoints = (t > -margin) & (t < wall_len + margin)
         on_wall = is_close_to_line & is_between_endpoints
@@ -1162,12 +1163,11 @@ def v3_both_poles_and_walls(df:DataFrame):
         # if on_wall[i] is True OR wall_inlier_mask[i] is already True, keep it True
         wall_inlier_mask = wall_inlier_mask | on_wall
 
-    # ============================================================
-    # STEP 3: Cluster remaining (non-wall) points with DBSCAN
-    # ============================================================
+    #remaining points
     remaining_data = data[~wall_inlier_mask]
     print(f"Points after wall removal: {len(remaining_data)} / {len(data)}")
 
+    #use db scan to see which points are noise and which are circles
     all_poles = []
     if len(remaining_data) >= MIN_POINTS:
         clustering = DBSCAN(eps=0.03, min_samples=3).fit(remaining_data)
@@ -1178,23 +1178,21 @@ def v3_both_poles_and_walls(df:DataFrame):
             if len(cluster_points) < MIN_POINTS:
                 continue
 
-            # ============================================================
-            # STEP 4: Classify each cluster as a potential pole
-            # ============================================================
+            #check if a cluster counts as a pole or not
             res = classify_cluster(cluster_points)
             if res and res["type"] == "pole":
                 all_poles.append(res)
 
-    # ============================================================
+
     # Plotting
-    # ============================================================
     plt.figure(figsize=(9, 9))
     plt.scatter(x, y, c="green", s=5, alpha=0.5, label="All points")
 
-    # Plot remaining (non-wall) points for debugging
+    #plot all points
     if len(remaining_data) > 0:
         plt.scatter(remaining_data[:, 0], remaining_data[:, 1],
                     c="orange", s=10, alpha=0.7, label="Non-wall points")
+
 
     for i, pole in enumerate(all_poles):
         if 'cx' in pole:
